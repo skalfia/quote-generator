@@ -7,9 +7,10 @@ import re
 
 st.set_page_config(page_title="מערכת הצעות מחיר - קובי", layout="wide")
 
-# פונקציית עזר לניקוי מחיר מטקסט (הופכת "855$" ל-855.0)
+# פונקציה לניקוי והמרת מחיר למספר (מטפלת ב-$ ופסיקים)
 def parse_price(price_str):
     try:
+        if isinstance(price_str, (int, float)): return float(price_str)
         return float(re.sub(r'[^\d.]', '', str(price_str)))
     except:
         return 0.0
@@ -30,6 +31,7 @@ def load_and_map_df(file):
             if 'כמות ברכש' in col: mapping['stock_purchase'] = col
             if 'הזמנות לקוח לאיסוף' in col: mapping['stock_orders'] = col
         
+        # חישוב מלאי זמין
         df['מלאי זמין'] = df[mapping.get('stock_main', df.columns[0])].fillna(0) + \
                           df[mapping.get('stock_purchase', df.columns[0])].fillna(0) + \
                           df[mapping.get('stock_orders', df.columns[0])].fillna(0)
@@ -41,9 +43,11 @@ def load_and_map_df(file):
         st.error(f"שגיאה: {e}")
         return None
 
-# הגדרות API
+# סרגל צד
 st.sidebar.title("🛠️ הגדרות")
 api_key = st.sidebar.text_input("הכנס Google API Key:", type="password")
+margin = st.sidebar.slider("מתח רווח להוספה (%)", 0, 50, 15)
+
 model = None
 if api_key:
     try:
@@ -51,10 +55,6 @@ if api_key:
         model = genai.GenerativeModel('gemini-1.5-flash')
         st.sidebar.success("✅ API מחובר")
     except: st.sidebar.error("❌ מפתח לא תקין")
-
-# מדד אחוזים בסרגל הצד
-st.sidebar.divider()
-margin = st.sidebar.slider("מתח רווח להוספה (%)", 0, 50, 15)
 
 if 'cart' not in st.session_state: st.session_state.cart = []
 if 'inventory_df' not in st.session_state: st.session_state.inventory_df = pd.DataFrame()
@@ -73,7 +73,7 @@ with tab1:
 
     if not st.session_state.inventory_df.empty:
         inv = st.session_state.inventory_df
-        search = st.selectbox('🔍 חפש מוצר במלאי:', [""] + inv['search'].tolist())
+        search = st.selectbox('🔍 חפש מוצר:', [""] + inv['search'].tolist())
         if search:
             row = inv[inv['search'] == search].iloc[0]
             m = st.session_state.mapping
@@ -94,62 +94,50 @@ with tab1:
                 st.toast("נוסף!")
 
 with tab2:
-    st.info("הדבק את הטקסט מהמייל. ה-AI יזהה מקט, תיאור ומחיר גם אם הם בשורות נפרדות.")
-    pasted = st.text_area("הדבק כאן את נתוני הספק:", height=250)
+    pasted = st.text_area("הדבק כאן את נתוני הספק (מקט, תיאור ומחיר):", height=250)
     if st.button("🚀 חלץ מוצרים והוסף לסל") and model and pasted:
-        with st.spinner("AI מנתח נתונים..."):
+        with st.spinner("AI מנתח..."):
             try:
-                # הנחיה קשיחה לפורמט JSON בלבד
-                prompt = f"""
-                Extract all products from this text. 
-                Return ONLY a JSON list of objects. No intro text, no conversational filler.
-                Each object MUST have:
-                "sku": the part number or config name
-                "desc": the full product description
-                "price": the numeric price (remove $ and commas)
-                
-                Text to analyze:
-                {pasted}
-                """
+                prompt = f"Extract items as JSON list [{{'sku','desc','price'}}] from: {pasted}. Return ONLY JSON."
                 res = model.generate_content(prompt)
-                # ניקוי שאריות Markdown אם קיימות
-                raw_text = res.text.strip()
-                clean_json = re.sub(r'```json\s*|```', '', raw_text)
+                
+                # ניקוי תיבת הקוד Markdown (כמו שראינו בתמונה שלך)
+                raw_res = res.text.strip()
+                clean_json = re.sub(r'```json\s*|```', '', raw_res)
                 
                 items = json.loads(clean_json)
                 for i in items:
                     st.session_state.cart.append({
                         "סטטוס": "רכש (ספק)",
-                        "תאור מוצר": i.get('desc', 'ללא תיאור'),
+                        "תאור מוצר": i.get('desc', ''),
                         "כמות": 1,
-                        "מקט / CONFIG": i.get('sku', 'ללא מק"ט'),
+                        "מקט / CONFIG": i.get('sku', ''),
                         "מחיר לסוכן": parse_price(i.get('price', 0))
                     })
                 st.success(f"חולצו {len(items)} פריטים!")
                 st.rerun()
             except Exception as e:
-                st.error(f"ה-AI לא הצליח לחלץ נתונים. וודא שהטקסט כולל מחיר ומק\"ט. שגיאה: {e}")
+                st.error(f"לא הצלחתי לפענח את התשובה. שגיאה: {e}")
 
+# הצגת ההצעה
 if st.session_state.cart:
     st.divider()
-    st.subheader("📋 סיכום הצעת מחיר")
+    st.subheader("📋 הצעת מחיר סופית")
     
     final_df = pd.DataFrame(st.session_state.cart)
-    
-    # חישוב מחיר סופי לפי המדד בסרגל הצד
+    # חישוב המחיר ללקוח בזמן אמת לפי האחוזים בסיידבר
     final_df['מחיר ללקוח'] = final_df['מחיר לסוכן'].apply(lambda x: round(float(x) * (1 + margin/100), 2))
     
-    # עמודות להצגה ולהורדה
     cols = ["סטטוס", "תאור מוצר", "כמות", "מקט / CONFIG", "מחיר לסוכן", "מחיר ללקוח"]
     st.table(final_df[cols])
     
-    col_a, col_b = st.columns(2)
-    with col_a:
-        if st.button("🗑️ נקה הכל"):
+    c_a, c_b = st.columns(2)
+    with c_a:
+        if st.button("🗑️ נקה הצעה"):
             st.session_state.cart = []
             st.rerun()
-    with col_b:
+    with c_b:
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             final_df[cols].to_excel(writer, index=False)
-        st.download_button("📥 הורד אקסל סופי", data=output.getvalue(), file_name="Customer_Quote.xlsx")
+        st.download_button("📥 הורד אקסל מוכן", data=output.getvalue(), file_name="Customer_Quote.xlsx")
