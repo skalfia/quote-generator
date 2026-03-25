@@ -3,3 +3,4 @@ pandas
 google-generativeai
 openpyxl
 PyPDF2
+python-calamine
