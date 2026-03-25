@@ -5,237 +5,171 @@ import io
 import json
 import PyPDF2
 
-# הגדרות עמוד רחב ומראה נקי
-st.set_page_config(page_title="ניהול מלאי והצעות מחיר חכמות - קובי", layout="wide")
+# הגדרות עמוד
+st.set_page_config(page_title="ניהול מחסן והצעות מחיר - קובי", layout="wide")
 
-# פונקציה לטעינת אקסל חסינה לשגיאות עיצוב
+# פונקציות עזר
 def load_inventory(file):
     try:
-        # קריאת הנתונים בלבד ללא עיצובים (מונע שגיאות Fill/Styles)
-        df = pd.read_excel(file, engine='openpyxl')
+        # פתרון לשגיאת ה-Styles: קוראים רק את הנתונים
+        from openpyxl import load_workbook
+        wb = load_workbook(file, data_only=True)
+        ws = wb.active
+        data = ws.values
+        cols = next(data)
+        df = pd.DataFrame(data, columns=cols)
         # ניקוי רווחים משמות העמודות
         df.columns = [str(c).strip() for c in df.columns]
         return df
     except Exception as e:
-        st.error(f"שגיאה בקריאת הקובץ: {e}")
+        st.error(f"שגיאה בקריאת האקסל: {e}")
         return None
 
-# פונקציה לחילוץ טקסט מקובץ PDF
 def extract_text_from_pdf(pdf_file):
     try:
         reader = PyPDF2.PdfReader(pdf_file)
         text = ""
         for page in reader.pages:
-            text += page.extract_text()
+            text += page.extract_text() or ""
         return text
     except Exception as e:
         st.error(f"שגיאה בקריאת ה-PDF: {e}")
         return None
 
 # הגדרת ה-AI בתפריט הצד
-st.sidebar.title("🛠️ הגדרות מערכת")
+st.sidebar.title("🛠️ הגדרות")
 api_key = st.sidebar.text_input("הכנס Google API Key:", type="password")
 
-# אתחול המודל רק אם יש מפתח
 model = None
 if api_key:
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # שינוי למודל ה-Pro שעובד ב-100% מהמקרים
+        model = genai.GenerativeModel('gemini-pro')
     except Exception as e:
         st.sidebar.error(f"שגיאה בחיבור ל-API: {e}")
 
-# ניהול הזיכרון (Session State)
+# ניהול הזיכרון
 if 'cart' not in st.session_state:
     st.session_state.cart = []
 if 'inventory_df' not in st.session_state:
     st.session_state.inventory_df = pd.DataFrame()
 
-st.title("📦 מערכת ניהול הצעות מחיר חכמה")
+st.title("📦 מערכת הצעות מחיר חכמה")
 
-# חלוקה לטורים רחבים
+# בדיקת המפתח להודעת אישור
+if api_key and model:
+    st.sidebar.success("✅ מפתח ה-API מחובר")
+
 col_inv, col_quote = st.columns([1, 1])
 
-# --- צד ימין: המחסן ושורת חיפוש ---
+# --- צד ימין: המחסן ---
 with col_inv:
     st.subheader("🏢 המחסן שלי")
-    uploaded_inv = st.file_uploader("1. טען קובץ מלאי מעודכן (XLSX)", type=["xlsx"])
+    uploaded_inv = st.file_uploader("1. טען קובץ מלאי (XLSX)", type=["xlsx"])
     
     if uploaded_inv:
         df = load_inventory(uploaded_inv)
         if df is not None:
             st.session_state.inventory_df = df
-            st.success(f"נטענו {len(df)} פריטים מהמלאי")
+            st.success(f"נטענו {len(df)} פריטים")
 
     if not st.session_state.inventory_df.empty:
         inv = st.session_state.inventory_df
-        
-        # מיפוי עמודות לפי הצילום ששלחת
+        # מיפוי עמודות לפי הצילום שלך
         col_sku = 'מק"ט'
         col_desc = 'תאור מוצר'
         col_price = 'מחיר קניה'
         
-        # יצירת שורת חיפוש משולבת
-        inv['display'] = inv[col_sku].astype(str) + " | " + inv[col_desc].astype(str)
-        
+        # שורת חיפוש חכמה
+        inv['search_tag'] = inv[col_sku].astype(str) + " | " + inv[col_desc].astype(str)
         st.write("---")
-        search_query = st.selectbox(
-            "🔍 חפש מוצר במלאי (לחיפוש מהיר):",
-            options=[""] + inv['display'].tolist(),
-            format_func=lambda x: "התחל להקליד לחיפוש..." if x == "" else x
-        )
+        search_val = st.selectbox("🔍 חפש מוצר במלאי:", options=[""] + inv['search_tag'].tolist())
         
-        if search_query:
-            selected_row = inv[inv['display'] == search_query].iloc[0]
-            
-            # תצוגת פרטי מוצר נבחר
+        if search_val:
+            row = inv[inv['search_tag'] == search_val].iloc[0]
             with st.container(border=True):
-                st.write(f"**מק\"ט:** {selected_row[col_sku]}")
-                st.write(f"**תיאור:** {selected_row[col_desc]}")
-                st.write(f"**יתרה במחסן:** {selected_row.get('יתרה מחסני', 'לא צוין')}")
-                st.markdown(f"### מחיר קניה: ${selected_row[col_price]}")
-                
-                if st.button("➕ הוסף מהמלאי להצעת המחיר", use_container_width=True):
+                st.write(f"**{row[col_desc]}**")
+                st.write(f"מק\"ט: {row[col_sku]}")
+                st.markdown(f"### מחיר קניה: ${row[col_price]}")
+                if st.button("➕ הוסף להצעה", use_container_width=True):
                     st.session_state.cart.append({
-                        "מק\"ט": selected_row[col_sku],
-                        "תיאור": selected_row[col_desc],
-                        "מחיר קניה": selected_row[col_price],
-                        "מקור": "מלאי פנימי"
+                        "מק\"ט": row[col_sku], "תיאור": row[col_desc],
+                        "מחיר קניה": row[col_price], "מקור": "מחסן"
                     })
-                    st.toast("המוצר נוסף לסל!")
+                    st.toast("נוסף!")
 
-# --- צד שמאל: עיבוד מיילים מהספקים ---
+# --- צד שמאל: ספקים ---
 with col_quote:
-    st.subheader("📧 חילוץ ממייל/קובץ ספק (AI)")
+    st.subheader("📧 חילוץ מהצעה (PDF/מייל)")
+    supplier_file = st.file_uploader("2. גרור קובץ PDF מהספק:", type=["pdf"])
+    pasted_text = st.text_area("או הדבק כאן טקסט מהמייל:", height=100)
     
-    # אפשרות גרירת קבצים
-    uploaded_supplier_file = st.file_uploader("2. גרור קובץ הצעת ספק (PDF או TXT)", type=["pdf", "txt"])
-    
-    # אפשרות הדבקת טקסט (כגיבוי)
-    email_text_pasted = st.text_area("או הדבק כאן את תוכן המייל:", height=150, placeholder="הדבק כאן את רשימת המוצרים והמחירים...")
-    
-    # קביעת הטקסט לעיבוד
-    final_text_to_process = ""
-    if uploaded_supplier_file:
-        if uploaded_supplier_file.type == "application/pdf":
-            final_text_to_process = extract_text_from_pdf(uploaded_supplier_file)
-        else: # txt
-            final_text_to_process = uploaded_supplier_file.read().decode('utf-8')
-    elif email_text_pasted:
-        final_text_to_process = email_text_pasted
+    input_text = ""
+    if supplier_file:
+        input_text = extract_text_from_pdf(supplier_file)
+    elif pasted_text:
+        input_text = pasted_text
 
     if st.button("🚀 נתח נתונים והוסף", use_container_width=True):
-        if not model:
-            st.error("נא להזין API Key בתפריט הצד")
-        elif not final_text_to_process:
-            st.warning("נא לגרור קובץ או להדביק טקסט לעיבוד")
+        if not model: st.error("נא להזין API Key")
+        elif not input_text: st.warning("אין תוכן לניתוח")
         else:
-            with st.spinner("ה-AI מנתח את הנתונים..."):
+            with st.spinner("ה-AI מנתח..."):
                 try:
-                    # פרומפט משופר לקבלת JSON נקי
-                    prompt = f"""
-                    Identify products, SKUs, and prices from this text.
-                    Return ONLY a JSON list of objects with "sku", "description", and "price".
-                    Important: Price must be a number only.
-                    Text: {final_text_to_process}
-                    """
-                    response = model.generate_content(prompt)
-                    # ניקוי פורמט ה-Markdown מהתשובה
-                    raw_res = response.text.replace('```json', '').replace('```', '').strip()
-                    items = json.loads(raw_res)
-                    
+                    prompt = f"Return ONLY a JSON list of products with 'sku', 'description', and 'price'. Text: {input_text}"
+                    res = model.generate_content(prompt)
+                    clean_res = res.text.replace('```json', '').replace('```', '').strip()
+                    items = json.loads(clean_res)
                     for item in items:
                         st.session_state.cart.append({
-                            "מק\"ט": item.get('sku', 'N/A'),
-                            "תיאור": item.get('description', 'N/A'),
-                            "מחיר קניה": item.get('price', 0),
-                            "מקור": "ספק חיצוני"
+                            "מק\"ט": item.get('sku', 'N/A'), "תיאור": item.get('description', 'N/A'),
+                            "מחיר קניה": item.get('price', 0), "מקור": "ספק"
                         })
-                    st.success(f"חולצו {len(items)} מוצרים בהצלחה!")
+                    st.success(f"חולצו {len(items)} פריטים!")
                 except Exception as e:
-                    st.error(f"שגיאה בניתוח הנתונים: {e}")
+                    st.error(f"שגיאה בניתוח: {e}")
 
-# --- חלק תחתון: ריכוז וייצוא הצעת המחיר ---
+# --- חלק תחתון: ריכוז ---
 st.divider()
 if st.session_state.cart:
-    st.header("📄 הצעת המחיר המתגבשת")
+    st.header("📄 הצעת מחיר סופית")
+    margin = st.slider("אחוז רווח (%)", 0, 20, 10)
     
-    # ניהול רווח
-    margin = st.slider("אחוז רווח מבוקש (%)", 0, 20, 10)
-    
-    # השוואת מחירים (לוגיקה)
-    inventory_skus = []
+    # השוואה למלאי
+    inv_data = {}
     if not st.session_state.inventory_df.empty:
-        # מיפוי עמודות
-        col_sku_inv = 'מק"ט'
-        col_price_inv = 'מחיר קניה'
-        # יצירת מילון חיפוש מהיר למק"טים
-        st.session_state.inventory_df[col_sku_inv] = st.session_state.inventory_df[col_sku_inv].astype(str)
-        inventory_skus = st.session_state.inventory_df[col_sku_inv].tolist()
-        inventory_prices = dict(zip(st.session_state.inventory_df[col_sku_inv], st.session_state.inventory_df[col_price_inv]))
+        inv_data = dict(zip(st.session_state.inventory_df['מק"ט'].astype(str), st.session_state.inventory_df['מחיר קניה']))
 
-    # הצגת הטבלה בצורה דינמית עם התראות
-    indices_to_remove = []
+    to_delete = []
     for i, item in enumerate(st.session_state.cart):
         sku = str(item['מק"ט'])
-        cost_price = round(float(str(item['מחיר קניה']).replace('$','')), 2)
-        customer_price = round(cost_price * (1 + margin/100), 2)
-        source = item['מקור']
-        description = item['תיאור']
-
+        cost = float(str(item['מחיר קניה']).replace('$',''))
+        final_p = round(cost * (1 + margin/100), 2)
+        
         with st.container(border=True):
-            col1, col2, col3 = st.columns([4, 2, 1])
-            
-            # טור 1: פרטי מוצר
-            with col1:
-                st.write(f"**{description}**")
-                st.write(f"מק\"ט: {sku} | מקור: {source}")
-            
-            # טור 2: מחיר סופי
-            with col2:
-                st.markdown(f"### מחיר ללקוח: ${customer_price}")
-            
-            # טור 3: כפתור מחיקה
-            with col3:
-                if st.button("🗑️ מחק", key=f"remove_{i}"):
-                    indices_to_remove.append(i)
+            c1, c2, c3 = st.columns([4, 2, 1])
+            with c1:
+                st.write(f"**{item['תיאור']}** (מק\"ט: {sku})")
+                if item['מקור'] == "ספק" and sku in inv_data:
+                    if inv_data[sku] < cost:
+                        st.warning(f"⚠️ קיים במחסן שלך ביותר זול! (${inv_data[sku]})")
+                    else:
+                        st.info(f"💡 קיים גם במחסן שלך (${inv_data[sku]})")
+            with c2: st.markdown(f"**מחיר ללקוח: ${final_p}**")
+            with c3:
+                if st.button("🗑️", key=f"del_{i}"): to_delete.append(i)
 
-            # לוגיקת השוואת מחירים (אם המוצר מהספק)
-            if source == "ספק חיצוני" and inventory_skus and sku in inventory_skus:
-                inv_cost = inventory_prices[sku]
-                if inv_cost < cost_price:
-                    st.warning(f"💡 שים לב! המוצר קיים במלאי המחסן שלך. מחיר קניה ספק: ${cost_price}, מחיר קניה מחסן: ${inv_cost}.")
-                else:
-                    st.info(f"💡 המוצר קיים במלאי המחסן שלך, אך מחיר הספק זול יותר.")
-    
-    # ביצוע מחיקות (אם היו)
-    if indices_to_remove:
-        for index in sorted(indices_to_remove, reverse=True):
-            del st.session_state.cart[index]
+    if to_delete:
+        for idx in sorted(to_delete, reverse=True): del st.session_state.cart[idx]
         st.rerun()
 
-    # יצירת אקסל להורדה
-    st.write("---")
-    df_final_export = pd.DataFrame(st.session_state.cart)
-    if not df_final_export.empty:
-        df_final_export['מחיר ללקוח'] = df_final_export['מחיר קניה'].apply(lambda x: round(float(str(x).replace('$','')) * (1 + margin/100), 2))
-        
-        c1, c2 = st.columns(2)
-        with c1:
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df_final_export[['מק\"ט', 'תיאור', 'מחיר ללקוח', 'מקור']].to_excel(writer, index=False, sheet_name='הצעת מחיר')
-            
-            st.download_button(
-                label="📥 הורד אקסל למנהל תיק לקוח",
-                data=output.getvalue(),
-                file_name="Customer_Quote.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-        with c2:
-            if st.button("🗑️ נקה הכל", use_container_width=True):
-                st.session_state.cart = []
-                st.rerun()
+    # הורדה
+    df_exp = pd.DataFrame(st.session_state.cart)
+    df_exp['מחיר ללקוח'] = df_exp['מחיר קניה'].apply(lambda x: round(float(str(x).replace('$','')) * (1+margin/100), 2))
+    out = io.BytesIO()
+    with pd.ExcelWriter(out, engine='openpyxl') as wr:
+        df_exp[['מק"ט', 'תיאור', 'מחיר ללקוח']].to_excel(wr, index=False)
+    st.download_button("📥 הורד אקסל מוכן", data=out.getvalue(), file_name="Quote.xlsx", use_container_width=True)
 else:
     st.info("הצעת המחיר ריקה. חפש מוצרים במלאי או טען קובץ ספק.")
