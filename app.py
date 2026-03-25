@@ -3,8 +3,16 @@ import pandas as pd
 import google.generativeai as genai
 import io
 import json
+import re
 
 st.set_page_config(page_title="מערכת הצעות מחיר - קובי", layout="wide")
+
+# פונקציית עזר לניקוי מחיר מטקסט (הופכת "855$" ל-855.0)
+def parse_price(price_str):
+    try:
+        return float(re.sub(r'[^\d.]', '', str(price_str)))
+    except:
+        return 0.0
 
 def clean_col(name):
     return " ".join(str(name).split()).strip()
@@ -44,6 +52,10 @@ if api_key:
         st.sidebar.success("✅ API מחובר")
     except: st.sidebar.error("❌ מפתח לא תקין")
 
+# מדד אחוזים בסרגל הצד
+st.sidebar.divider()
+margin = st.sidebar.slider("מתח רווח להוספה (%)", 0, 50, 15)
+
 if 'cart' not in st.session_state: st.session_state.cart = []
 if 'inventory_df' not in st.session_state: st.session_state.inventory_df = pd.DataFrame()
 
@@ -61,15 +73,15 @@ with tab1:
 
     if not st.session_state.inventory_df.empty:
         inv = st.session_state.inventory_df
-        search = st.selectbox('🔍 חפש מוצר:', [""] + inv['search'].tolist())
+        search = st.selectbox('🔍 חפש מוצר במלאי:', [""] + inv['search'].tolist())
         if search:
             row = inv[inv['search'] == search].iloc[0]
             m = st.session_state.mapping
             
             c1, c2, c3 = st.columns(3)
-            with c1: st.metric("מחיר סוכן (קניה)", f"${row[m['price']]}")
+            with c1: st.metric("מחיר סוכן", f"${row[m['price']]}")
             with c2: st.metric("מלאי זמין", int(row['מלאי זמין']))
-            with c3: qty = st.number_input("כמות להוספה:", min_value=1, value=1, key="inv_qty")
+            with c3: qty = st.number_input("כמות:", min_value=1, value=1, key="inv_qty")
             
             if st.button("➕ הוסף להצעה"):
                 st.session_state.cart.append({
@@ -77,55 +89,59 @@ with tab1:
                     "תאור מוצר": row[m['desc']],
                     "כמות": qty,
                     "מקט / CONFIG": row[m['sku']],
-                    "מחיר לסוכן": float(str(row[m['price']]).replace('$','').replace(',',''))
+                    "מחיר לסוכן": parse_price(row[m['price']])
                 })
                 st.toast("נוסף!")
 
 with tab2:
-    st.info("הדבק טקסט חופשי מהמייל (מקט, תיאור ומחיר). ה-AI יזהה את הנתונים באופן אוטומטי.")
-    pasted = st.text_area("הדבק כאן את נתוני הספק:", height=200)
-    if st.button("🚀 חלץ והוסף לסל") and model and pasted:
+    st.info("הדבק את הטקסט מהמייל. ה-AI יזהה מקט, תיאור ומחיר גם אם הם בשורות נפרדות.")
+    pasted = st.text_area("הדבק כאן את נתוני הספק:", height=250)
+    if st.button("🚀 חלץ מוצרים והוסף לסל") and model and pasted:
         with st.spinner("AI מנתח נתונים..."):
             try:
-                # הנחיה מדויקת יותר ל-AI כדי שיבין את הפורמט שלך
+                # הנחיה קשיחה לפורמט JSON בלבד
                 prompt = f"""
-                You are a data extractor. Extract product information from the following text and return ONLY a valid JSON list.
-                Each object must have: 'sku', 'desc', 'price' (as a number).
-                If a price has a $ sign, remove it and return only the number.
-                Text:
+                Extract all products from this text. 
+                Return ONLY a JSON list of objects. No intro text, no conversational filler.
+                Each object MUST have:
+                "sku": the part number or config name
+                "desc": the full product description
+                "price": the numeric price (remove $ and commas)
+                
+                Text to analyze:
                 {pasted}
                 """
                 res = model.generate_content(prompt)
-                clean_json = res.text.strip().replace('```json', '').replace('```', '')
+                # ניקוי שאריות Markdown אם קיימות
+                raw_text = res.text.strip()
+                clean_json = re.sub(r'```json\s*|```', '', raw_text)
+                
                 items = json.loads(clean_json)
                 for i in items:
                     st.session_state.cart.append({
-                        "סטטוס": "רכש (ספק חיצוני)",
-                        "תאור מוצר": i['desc'],
+                        "סטטוס": "רכש (ספק)",
+                        "תאור מוצר": i.get('desc', 'ללא תיאור'),
                         "כמות": 1,
-                        "מקט / CONFIG": i['sku'],
-                        "מחיר לסוכן": float(i['price'])
+                        "מקט / CONFIG": i.get('sku', 'ללא מק"ט'),
+                        "מחיר לסוכן": parse_price(i.get('price', 0))
                     })
                 st.success(f"חולצו {len(items)} פריטים!")
                 st.rerun()
             except Exception as e:
-                st.error("ה-AI לא הצליח לפענח את המבנה. נסה להדביק טקסט ברור יותר.")
+                st.error(f"ה-AI לא הצליח לחלץ נתונים. וודא שהטקסט כולל מחיר ומק\"ט. שגיאה: {e}")
 
 if st.session_state.cart:
     st.divider()
-    st.subheader("📋 עריכת הצעת מחיר סופית")
-    
-    # הוספת מדד האחוזים (הרווח)
-    margin = st.sidebar.slider("מתח רווח להוספה (%)", 0, 50, 15)
+    st.subheader("📋 סיכום הצעת מחיר")
     
     final_df = pd.DataFrame(st.session_state.cart)
     
-    # חישוב מחיר סופי ללקוח (כולל הרווח)
+    # חישוב מחיר סופי לפי המדד בסרגל הצד
     final_df['מחיר ללקוח'] = final_df['מחיר לסוכן'].apply(lambda x: round(float(x) * (1 + margin/100), 2))
     
-    # תצוגה לפי הפורמט שביקשת
-    display_cols = ["סטטוס", "תאור מוצר", "כמות", "מקט / CONFIG", "מחיר לסוכן", "מחיר ללקוח"]
-    st.table(final_df[display_cols])
+    # עמודות להצגה ולהורדה
+    cols = ["סטטוס", "תאור מוצר", "כמות", "מקט / CONFIG", "מחיר לסוכן", "מחיר ללקוח"]
+    st.table(final_df[cols])
     
     col_a, col_b = st.columns(2)
     with col_a:
@@ -135,5 +151,5 @@ if st.session_state.cart:
     with col_b:
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            final_df[display_cols].to_excel(writer, index=False)
-        st.download_button("📥 הורד אקסל בפורמט סופי", data=output.getvalue(), file_name="Quote_Final.xlsx")
+            final_df[cols].to_excel(writer, index=False)
+        st.download_button("📥 הורד אקסל סופי", data=output.getvalue(), file_name="Customer_Quote.xlsx")
