@@ -7,7 +7,7 @@ import google.generativeai as genai
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill, Font, Alignment
 
-# --- הגדרות דף ---
+# --- דף הגדרות ---
 st.set_page_config(
     page_title="PC Pro Manager",
     page_icon="💻",
@@ -46,8 +46,8 @@ html, body, [class*="css"] {
     background: linear-gradient(90deg, var(--bg-card) 0%, var(--green-dim) 100%);
     border: 1px solid var(--green-bright);
     border-radius: 15px;
-    padding: 25px;
-    margin-bottom: 30px;
+    padding: 20px;
+    margin-bottom: 25px;
     text-align: center;
 }
 
@@ -57,13 +57,14 @@ html, body, [class*="css"] {
     margin: 0 !important;
 }
 
+/* עיצוב כרטיס סל */
 .cart-item {
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-right: 5px solid var(--green-neon);
     border-radius: 10px;
-    padding: 15px;
-    margin-bottom: 12px;
+    padding: 12px;
+    margin-bottom: 10px;
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -73,16 +74,20 @@ html, body, [class*="css"] {
     font-family: 'JetBrains Mono', monospace;
     color: var(--green-neon);
     font-weight: 600;
-    font-size: 1.3rem;
 }
 
-.ai-box {
-    background: linear-gradient(135deg, var(--bg-card), var(--green-dim));
-    border: 1px solid var(--green-bright);
-    border-radius: 12px;
-    padding: 20px;
-    margin-top: 15px;
-    line-height: 1.6;
+/* עיצוב שורות המלאי לחיפוש */
+.inventory-row {
+    background: rgba(255,255,255,0.03);
+    border-bottom: 1px solid var(--border);
+    padding: 8px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.inventory-row:hover {
+    background: rgba(77, 187, 77, 0.1);
 }
 </style>
 """, unsafe_allow_html=True)
@@ -111,7 +116,6 @@ def export_to_excel(cart_data, margin):
     ws = wb.active
     ws.title = "הצעת מחיר"
     ws.sheet_view.rightToLeft = True
-    
     headers = ["סטטוס", "תיאור פריט", "מק\"ט", "כמות", "מחיר ספק", "מחיר ללקוח", "סה\"כ"]
     ws.append(headers)
     
@@ -126,15 +130,7 @@ def export_to_excel(cart_data, margin):
         agent_p = format_price(item.get('price', 0))
         cust_p = round(agent_p * (1 + margin/100), 2)
         qty = int(item.get('quantity', 1))
-        ws.append([
-            item.get('status', 'רכש'),
-            item.get('description', ''),
-            item.get('sku', ''),
-            qty,
-            agent_p,
-            cust_p,
-            cust_p * qty
-        ])
+        ws.append([item.get('status', 'רכש'), item.get('description', ''), item.get('sku', ''), qty, agent_p, cust_p, cust_p * qty])
     
     output = io.BytesIO()
     wb.save(output)
@@ -152,80 +148,80 @@ with st.sidebar:
             genai.configure(api_key=api_key)
             model = genai.GenerativeModel('gemini-1.5-flash')
             st.success("AI Online")
-        except: st.error("שגיאה במפתח")
+        except: st.error("Key Error")
 
 # --- גוף האפליקציה ---
-st.markdown('<div class="main-header"><h1>PC Pro Manager</h1><p>ניהול מלאי והצעות מחיר | קובי אלפיה</p></div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header"><h1>PC Pro Manager</h1></div>', unsafe_allow_html=True)
 
-tabs = st.tabs(["📦 ניהול מלאי", "📝 חילוץ נתונים", "📑 סל וייצוא"])
+tabs = st.tabs(["📦 מלאי וחיפוש", "📝 חילוץ נתונים", "📑 סל וייצוא"])
 
 with tabs[0]:
     c1, c2 = st.columns([1, 1])
     with c1:
-        st.markdown("#### טעינת אקסל מלאי")
-        uploaded_file = st.file_uploader("העלה קובץ XLSX (מלאי מרוכז)", type=["xlsx"])
-        
+        uploaded_file = st.file_uploader("טען אקסל מלאי (XLSX)", type=["xlsx"])
         if uploaded_file:
             try:
-                # מנגנון קריאה חסין לשגיאות BadZipFile
                 file_bytes = uploaded_file.read()
                 try:
-                    # ניסיון 1: קריאה ישירה עם מנוע openpyxl
                     df = pd.read_excel(io.BytesIO(file_bytes), engine='openpyxl')
                 except:
-                    # ניסיון 2: טעינה גולמית דרך openpyxl ואז המרה ל-Dataframe
                     wb = load_workbook(io.BytesIO(file_bytes), data_only=True)
                     sheet = wb.active
-                    data = sheet.values
-                    cols = next(data)
-                    df = pd.DataFrame(data, columns=cols)
-                
+                    data = list(sheet.values)
+                    df = pd.DataFrame(data[1:], columns=data[0])
                 st.session_state.inventory = df
-                st.success(f"המלאי נטען בהצלחה! ({len(df)} שורות)")
-                st.dataframe(df.head(5), use_container_width=True) # תצוגה מקדימה לאישור
+                st.success(f"נטענו {len(df)} שורות")
             except Exception as e:
-                st.error(f"שגיאה קריטית: המערכת לא מצליחה לפתוח את הקובץ.")
-                st.warning("הסבר: הקובץ נראה פגום או נעול על ידי אקסל.")
-                st.info("פתרון: פתח את הקובץ במחשב, בצע 'שמור בשם' כקובץ XLSX חדש ונסה להעלות שוב.")
-            
+                st.error("שגיאה בטעינת הקובץ. נסה לשמור אותו מחדש כאקסל רגיל.")
+
     with c2:
-        st.markdown("#### 🤖 יועץ חומרה")
-        query = st.text_input("שאל את המומחה:")
+        query = st.text_input("🤖 שאל את היועץ:")
         if st.button("בצע בדיקה") and model:
             inv_ctx = st.session_state.inventory.head(50).to_string() if st.session_state.inventory is not None else "אין מלאי"
-            with st.spinner("חושב..."):
+            with st.spinner("בודק..."):
                 res = model.generate_content(f"Inventory:\n{inv_ctx}\n\nQuestion: {query}")
                 st.session_state.ai_chat = res.text
-        
         if st.session_state.ai_chat:
-            st.markdown(f'<div class="ai-box">{st.session_state.ai_chat}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div style="background:rgba(77,187,77,0.1); padding:10px; border-radius:10px;">{st.session_state.ai_chat}</div>', unsafe_allow_html=True)
 
     if st.session_state.inventory is not None:
         st.divider()
-        search = st.text_input("🔍 חיפוש מהיר:")
+        search = st.text_input("🔍 חפש פריט (מק\"ט או שם):", placeholder="הקלד כאן...")
+        
         if search:
             df = st.session_state.inventory
+            # חיפוש חכם בכל העמודות
             res_df = df[df.apply(lambda r: search.lower() in str(r).lower(), axis=1)]
-            st.dataframe(res_df, use_container_width=True)
             
             if not res_df.empty:
-                idx = st.selectbox("בחר שורה להוספה:", res_df.index)
-                if st.button("➕ הוסף לסל"):
-                    row = res_df.loc[idx]
-                    st.session_state.cart.append({
-                        "status": "מלאי",
-                        "description": str(row.iloc[1]) if len(row) > 1 else "פריט",
-                        "sku": str(row.iloc[0]),
-                        "quantity": 1,
-                        "price": format_price(row.iloc[-1])
-                    })
-                    st.toast("נוסף!")
+                st.write(f"נמצאו {len(res_df)} תוצאות:")
+                # תצוגת שורות עם כפתור הוספה ליד כל אחת
+                for idx, row in res_df.iterrows():
+                    sku = str(row.iloc[0])
+                    name = str(row.iloc[1])
+                    price = format_price(row.iloc[-1])
+                    
+                    col_info, col_btn = st.columns([5, 1])
+                    with col_info:
+                        st.markdown(f"**{sku}** | {name} | <span style='color:#4dbb4d'>${price}</span>", unsafe_allow_html=True)
+                    with col_btn:
+                        if st.button("➕", key=f"add_{idx}"):
+                            st.session_state.cart.append({
+                                "status": "מלאי",
+                                "description": name,
+                                "sku": sku,
+                                "quantity": 1,
+                                "price": price
+                            })
+                            st.toast(f"התווסף: {sku}")
+                    st.markdown("<hr style='margin:5px 0; opacity:0.2'>", unsafe_allow_html=True)
+            else:
+                st.warning("לא נמצאו פריטים תואמים.")
 
 with tabs[1]:
-    st.markdown("#### חילוץ מוצרים ממייל")
-    txt = st.text_area("הדבק טקסט חופשי:", height=200)
+    txt = st.text_area("הדבק טקסט ממייל ספק:", height=200)
     if st.button("🚀 חלץ מוצרים") and model and txt:
-        with st.spinner("AI עובד..."):
+        with st.spinner("מנתח..."):
             p = f"Parse to JSON list [{{'description','sku','quantity','price'}}] : {txt}"
             res = model.generate_content(p)
             try:
@@ -233,29 +229,37 @@ with tabs[1]:
                 for d in data:
                     d['status'] = 'רכש'
                     st.session_state.cart.append(d)
-                st.success("הפריטים נוספו לסל!")
-            except: st.error("שגיאה בחילוץ - נסה שוב")
+                st.success("הפריטים חולצו ונוספו לסל!")
+            except: st.error("שגיאה בחילוץ.")
 
 with tabs[2]:
-    st.markdown("#### סיכום הצעת מחיר")
+    st.subheader("🛒 ריכוז הצעת מחיר")
     if not st.session_state.cart:
         st.info("הסל ריק")
     else:
-        for item in st.session_state.cart:
+        for i, item in enumerate(st.session_state.cart):
             p_agent = format_price(item.get('price', 0))
             p_cust = round(p_agent * (1 + profit_margin/100), 2)
-            st.markdown(f"""
-            <div class="cart-item">
-                <div><b>{item.get('description')}</b><br><small>מק"ט: {item.get('sku')}</small></div>
-                <div class="price-display">${p_cust}</div>
-            </div>
-            """, unsafe_allow_html=True)
+            
+            c_info, c_del = st.columns([5, 1])
+            with c_info:
+                st.markdown(f"""
+                <div class="cart-item">
+                    <div><b>{item.get('description')}</b><br><small>{item.get('sku')} | {item.get('status')}</small></div>
+                    <div class="price-display">${p_cust}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with c_del:
+                if st.button("🗑️", key=f"del_{i}"):
+                    st.session_state.cart.pop(i)
+                    st.rerun()
         
-        c_a, c_b = st.columns(2)
-        with c_a:
-            if st.button("🗑️ נקה הכל"):
+        st.divider()
+        c_clear, c_down = st.columns(2)
+        with c_clear:
+            if st.button("נקה סל"):
                 st.session_state.cart = []
                 st.rerun()
-        with c_b:
+        with c_down:
             xl = export_to_excel(st.session_state.cart, profit_margin)
-            st.download_button("📥 הורד אקסל ללקוח", data=xl, file_name=f"Quote_{pd.Timestamp.now().strftime('%d%m%y')}.xlsx")
+            st.download_button("📥 הורד אקסל ללקוח", data=xl, file_name="Quote.xlsx")
